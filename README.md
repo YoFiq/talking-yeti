@@ -1,56 +1,78 @@
-# Welcome to your Expo app 👋
+# Talking Yeti
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A "repeat after me" mobile app for Android and iOS, inspired by Talking Tom. The Yeti character listens to your voice, then plays it back at a higher pitch while animating in sync.
 
-## Get started
+Also, you can find example videos in `examples/` folder
 
-1. Install dependencies
+## How it works
 
-   ```bash
-   npm install
-   ```
+1. The app detects your voice automatically — no buttons needed
+2. Once silence is detected, recording stops
+3. The recorded audio plays back at 1.5x speed (chipmunk effect)
+4. The Yeti character animates in sync with each audio state
 
-2. Start the app
+## Tech stack
 
-   ```bash
-   npx expo start
-   ```
+- **Expo** (managed workflow + `expo-dev-client` for native modules)
+- **expo-audio** — recording and playback
+- **@rive-app/react-native** — character animation
+- **expo-router** — file-based navigation
+- **TypeScript**
 
-In the output, you'll find options to open the app in a
+## Why expo-audio
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+`expo-audio` is the modern replacement for `expo-av`. It was chosen for three specific reasons:
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+**1. Built-in metering**
+The recorder exposes a `metering` value (dBFS) on every status poll when `isMeteringEnabled: true` is set. This is used to implement voice activity detection (VAD) without any external library — the app polls the microphone level every 50ms and uses two thresholds with a hysteresis band to detect speech onset and trailing silence reliably.
 
-## Get a fresh project
+**2. Pitch effect via playback rate**
+`AudioPlayer.setPlaybackRate(1.5)` combined with `shouldCorrectPitch = false` plays the audio 1.5x faster without time-stretching, which proportionally raises the pitch. This is the same technique Talking Tom uses and requires no DSP library or backend.
 
-When you're ready, run:
+**3. Clean hook-based API**
+`useAudioRecorder` and `useAudioPlayer` manage native resource lifecycle automatically (prepare, record, stop, dispose). This keeps the audio logic self-contained in hooks without manual cleanup boilerplate.
 
-```bash
-npm run reset-project
+## Why @rive-app/react-native
+
+`@rive-app/react-native` (v0.4.x, Nitro-based) was chosen over other animation options — Lottie, Reanimated, or plain image sequences — for the following reasons:
+
+**1. State Machine**
+The `.riv` file ships with a State Machine that owns all animation transitions internally. The app only fires boolean inputs (`Hear`, `Talk`) — the Rive runtime handles blending, easing, and transition timing. This eliminates the need to coordinate animation frame timing from JavaScript.
+
+**2. Single source of truth for animation**
+The designer controls all animation states in the Rive editor. The code only maps app states (`idle`, `listening`, `processing`, `talking`) to State Machine inputs. If the animation needs to change, the `.riv` file is updated without touching application code.
+
+**3. Performance**
+Rive renders on the native thread via a C++ runtime. Animations run at full frame rate independent of the JS thread, so audio processing (metering polls, recording lifecycle) does not affect animation smoothness.
+
+**4. Nitro bridge (v0.4.x)**
+The v0.4.x release uses `react-native-nitro-modules` instead of the old JSI bridge. State Machine inputs (`triggerInput`, `setBooleanInputValue`) are synchronous native calls with no serialization overhead, which is important for keeping animation state in sync with audio events that happen on tight intervals.
+
+## Architecture
+
+```
+src/
+  services/
+    audioConfig.ts          # VAD thresholds, recording options, pitch settings
+  hooks/
+    useAudioPermission.ts   # Microphone permission + audio session setup
+    useVoiceDetector.ts     # VAD + recorder lifecycle (core audio logic)
+    useYetiPlayer.ts        # Playback with pitch effect
+    useYetiStateMachine.ts  # Rive State Machine bridge
+  components/
+    YetiCharacter.tsx       # Rive view, maps state to SM inputs
+  screens/
+    RepeaterScreen.tsx      # Orchestrator: owns AppState, wires all hooks
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Audio flow:
 
-### Other setup steps
-
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```
+Microphone
+  → AudioRecorder (metering every 50ms)
+  → VAD: voice > -35dBFS → start LISTENING
+  → silence < -45dBFS for 800ms → PROCESSING → stop()
+  → recorder.uri → AudioPlayer
+  → setPlaybackRate(1.5) + shouldCorrectPitch=false
+  → play() → TALKING → didJustFinish → IDLE
+```
